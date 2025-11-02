@@ -7,7 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 class Transaction extends Model
 {
     protected $fillable = [
-        'amount', 'notes', 'edit_history', 'initial_balance_id', 'user_id', 'branch_id'
+        'amount', 'notes', 'edit_history', 'initial_balance_id', 'user_id', 'branch_id', 'transaction_type'
     ];
 
     public function initialBalance ()

@@ -79,7 +79,7 @@ class AuthController extends Controller
         return ResponseController::successResponse('Success get user', $data, 200);
     }
 
-    public function getCurrentUser ()
+    public static function getCurrentUser ()
     {
         $currentUser = JWTAuth::parseToken()->authenticate();
         if (!$currentUser) return null; 
