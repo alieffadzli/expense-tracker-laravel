@@ -4,12 +4,18 @@ namespace App\Http\Controllers;
 
 use App\enum\UserRole;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cookie;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Enum;
+use Laravel\Socialite\Facades\Socialite;
 use Tymon\JWTAuth\Exceptions\JWTException;
 use Tymon\JWTAuth\Facades\JWTAuth;
+
+use Laravel\Socialite\Two\InvalidStateException;
+use Laravel\Socialite\Two\User as OAuth2User;
 
 class AuthController extends Controller
 {
@@ -67,9 +73,23 @@ class AuthController extends Controller
 
         $findUserByEmail = User::query()->where('email', $data['email'])->first();
         return ResponseController::successResponse('Sign in sucessful', [
-            'user' => $findUserByEmail,
-            'token' => $this->responseSuccessWithToken($token)
-        ]);
+            'user' => [
+                'id' => $findUserByEmail->id,
+                'name' => $findUserByEmail->name,
+                'email' => $data['email'],
+                'email_verified_at' => $findUserByEmail->email_verified_at
+            ],
+            'access_token' => $token
+        ])->cookie('refresh_token',    // nama cookie
+                    $token,             // isi JWT
+                    60 * 24,            // durasi (menit)
+                    '/',                // path
+                    'localhost',        // domain (WAJIB di-set biar cookie bisa di-share antar port)
+                    false,              // secure = false (karena masih http localhost)
+                    true,               // httpOnly
+                    false,              // raw
+                    'None'              // SameSite=None → wajib untuk cross-origins // path, domain, secure, httpOnly, raw, sameSite);
+        );
     }
 
     public function me ()
@@ -103,5 +123,37 @@ class AuthController extends Controller
             'token_type' => 'Bearer',
             'expires_in' => JWTAuth::factory()->getTTL() * 60
         ];
+    }
+
+    public function googleRedirect () {
+        return Socialite::driver('google')->scopes(['openid', 'profile', 'email'])
+                                          ->stateless()
+                                          ->redirect();
+    }
+
+    public function googleCallback () {
+        try {
+            /** @var OAuth2User $google_user */
+            $google_user = Socialite::driver('google')->stateless()->user();
+        } catch (InvalidStateException $exception) {
+            abort(400, $exception->getMessage());
+        }
+
+        $user = User::updateOrCreate([
+            'name' => $google_user->name,
+            'email' => $google_user->email,
+            'avatar' => $google_user->avatar,
+            'role' => 'employe',
+            'email_verified_at' => Carbon::now(),
+            'social_auth' => 'google',
+            'google_id' => $google_user->id,
+        ]);
+
+        $token = JWTAuth::fromUser($user);
+        
+        return response()->json([
+            'token' => $token,
+            'google_user' => $google_user->user
+        ]);
     }
 }

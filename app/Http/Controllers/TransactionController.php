@@ -7,7 +7,9 @@ use App\Models\DailyBalance;
 use App\Models\InitialBalance;
 use App\Models\Transaction;
 use Carbon\Carbon;
+use Exception;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rules\Enum;
 
@@ -25,96 +27,78 @@ class TransactionController extends Controller
             'edit_history' => 'nullable|array'
         ]);
 
-        if ($validate->fails()) 
-            return ResponseController::failsResponse('Validation error', $validate->errors(), null, 422);
-
+        /**
+         * state from request
+         */
         $data = $validate->validated();
-
-        /**
-         * if transactions is not exists -> transaksi belum pernah dibuat dari branch tersebut
-         */
-        $getTransactions = Transaction::query()->where('branch_id', $data['branch_id'])->get();
-        if (count($getTransactions) < 1) {
-            $getBalance = InitialBalance::query()->where('branch_id', $data['branch_id'])->first()->balance;
-            $totalBalance = $getBalance + ($data['transaction_type'] == 'income' ? $data['amount'] : -$data['amount']);
-
-            if ($totalBalance < 0)
-                return ResponseController::failsResponse('Failed to create transaction', 'Transaction is out of limit from balance', null, 422);
-
-            $createTransaction = Transaction::query()->create($data);
-            $createDailyBalance = DailyBalance::query()
-                                                ->create([
-                                                    'closing_balance' => $totalBalance,
-                                                    'transaction_id' => $createTransaction->id,
-                                                    'branch_id' => $data['branch_id']
-                                                ]);
-
-            return ResponseController::successResponse('Create transaction successful', [
-                'new_transaction' => $createTransaction,
-                'new_daily_balance' => $createDailyBalance
-            ], 201);
-        }
-
-        /**
-         * else jika transaksi pernah dibuat dari branch tersebut
-         */
-        $getLatestDailyBalance = DailyBalance::query()->where('branch_id', $data['branch_id'])->latest('id')->first();
-        $totalBalance = $getLatestDailyBalance->closing_balance + ($data['transaction_type'] == 'income' ? $data['amount'] : -$data['amount']); 
-
-        if ($totalBalance < 0)
-            return ResponseController::failsResponse('Failed to create transaction', 'Transaction is out of limit from balance', null, 422);
-
-        /**
-         * is Date greather then yesterday
-         */
-        $isDateGteYesterday = false;
-        $getFirstDailyBalance = DailyBalance::query()->first()->created_at;
-        $isSameDays = Carbon::parse($getFirstDailyBalance)->format('Y-m-d') == Carbon::now()->format('Y-m-d');
-        if (!$isSameDays) {
-            $getLatestDailyBalance = DailyBalance::query()->where('branch_id', $data['branch_id'])->latest('id')->first();
-            $getDate = Carbon::parse($getLatestDailyBalance->updated_at)->format('Y-m-d');
+        $branchId = $data['branch_id'];
+        $transactionType = $data['transaction_type'];
+        $transactionAmount = $data['amount'];
         
-            if ($getDate < Carbon::now()->format('Y-m-d')) $isDateGteYesterday = !$isDateGteYesterday;            
+        /**
+         * get daily balance
+         */
+        $getLtsDailyBalance = DailyBalance::query()->where('branch_id', $branchId)->latest('id')->first();
+        $getLtsOpeningBalance = $getLtsDailyBalance?->opening_balance;
+        $getLtsClosingBalance = $getLtsDailyBalance?->closing_balance;
+
+        /**
+         * get initial balance
+         */
+        $getInitialBalance = InitialBalance::query()->where('branch_id', $branchId)->first();
+        $useFirstOrLatest = $getLtsClosingBalance ?? $getInitialBalance->balance;
+        
+        /**
+         * calc closing balance
+         */
+        $calcClosingBalance = $useFirstOrLatest + ($transactionType == 'income' ? $transactionAmount : -$transactionAmount);
+        if ($calcClosingBalance < 0) return ResponseController::failsResponse('Transaction failed', 'Out of limit', null, 422);
+
+        /**
+         * get first date daily balance
+         */
+        $dailyBalanceFirstDate = Carbon::parse($getInitialBalance->created_at)->format('Y-m-d');
+        $isSameDays = $dailyBalanceFirstDate == Carbon::now()->format('Y-m-d');
+
+        /**
+         * is date end now?
+         */
+        $now = Carbon::now()->format('Y-m-d');
+        $latestDateDailyBalance = Carbon::parse($getLtsDailyBalance->created_at)->format('Y-m-d');
+
+        /**
+         * insert new transaction && daily balance
+         */
+        try {
+            DB::beginTransaction();
+            $newTransaction = Transaction::query()->create($data);
+            $newDailyBalance = Transaction::query()->where('id', $newTransaction->id)->latest('id')->first()
+                                                    ->dailyBalances()->create([
+                                                        'opening_balance' => $isSameDays ? 0 : ($latestDateDailyBalance < $now ? $getLtsClosingBalance : $getLtsOpeningBalance),
+                                                        'closing_balance' => $calcClosingBalance,
+                                                        'branch_id' => $data['branch_id']
+                                                    ]);
+    
+            DB::commit();
+            return ResponseController::successResponse('Create transactions successful', [
+                'message' => 'success',
+                'data' => [
+                    'new_transaction' => $newTransaction,
+                    'new_daily_balance' => $newDailyBalance,
+                ]
+            ], 201);
+
+        } catch (Exception $err) {
+            DB::rollBack();
+            return ResponseController::failsResponse('Create transactions successful', $err->getMessage(), null, 422);
         }
-
-        /**
-         * insert transaction
-         */
-        $createTransaction = Transaction::query()->create($data);
-
-        /**
-         * insert daily_balance
-         */
-        $getDailyBalance = DailyBalance::query()->where('branch_id', $data['branch_id'])->latest('id')->first();
-        $createDailyBalance = DailyBalance::query()
-                                            ->create([
-                                                'opening_balance' => $isDateGteYesterday ?
-                                                                     ($getDailyBalance->closing_balance ? $getDailyBalance->closing_balance : 0) : 
-                                                                     ($getDailyBalance->opening_balance ? $getDailyBalance->opening_balance : 0),
-                                                'closing_balance' => $totalBalance,
-                                                'transaction_id' => $createTransaction->id,
-                                                'branch_id' => $data['branch_id']
-                                            ]);
-
-        return ResponseController::successResponse('Create transactions successful', [
-            'is_date_gte_yesterday' => $isDateGteYesterday,
-            'new_transaction' => $createTransaction,
-            'new_daily_balance' => $createDailyBalance
-        ], 201);
-
-        /**
-         * DEBUG
-         */
-        // return ResponseController::successResponse('Create transactions successful', [
-        //     'carbon' => Carbon::parse($getFirstDailyBalance)->format('Y-m-d') == Carbon::now()->format('Y-m-d'),
-        //     'isDateGteYesterday' => $isDateGteYesterday
-        // ], 201);
     }
 
     public function getTransactions (Request $request)
     {
-        $hasBranchId = $request->branchId;
+        $hasBranchId = $request->branch_id;
         $hasDate = Carbon::parse($request->date);
+        $hasClosingBalance = $request->closing_balance;
 
         $transactions = Transaction::query()
                                     ->when($hasBranchId, function ($query) use ($hasBranchId) {
@@ -125,6 +109,11 @@ class TransactionController extends Controller
                                         $query->with('dailyBalances')
                                                 ->whereDate('created_at', '=', $hasDate);
                                     })
+                                    ->when($hasClosingBalance, function ($query) use ($hasClosingBalance)  {
+                                        $query->whereHas('dailyBalances', function ($query) use ($hasClosingBalance) {
+                                            $query->where('closing_balance', '>=', $hasClosingBalance );
+                                        });
+                                    })
                                     ->get();
 
         return ResponseController::successResponse('Success get transactions', [
@@ -132,6 +121,4 @@ class TransactionController extends Controller
             'date' => $hasDate
         ], 200);
     }
-
-
 }
