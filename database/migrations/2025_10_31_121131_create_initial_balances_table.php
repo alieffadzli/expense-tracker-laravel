@@ -15,9 +15,9 @@ return new class extends Migration
             $table->id();
             $table->integer('balance');
             $table->integer('balance_limit')->default(0);
-            $table->string('notes')->nullable()->unique();
+            $table->string('notes')->nullable();
 
-            $table->unsignedBigInteger('branch_id');
+            $table->unsignedBigInteger('branch_id')->unique();
             $table->foreign('branch_id')->references('id')->on('branches');
             
             $table->timestamps();

@@ -15,7 +15,7 @@ return new class extends Migration
             $table->id();
             $table->enum('transaction_type', ['income', 'expense'])->default('income');
             $table->integer('amount');
-            $table->string('notes')->unique();
+            $table->string('notes')->nullable();
             $table->json('edit_history')->nullable();
 
 
